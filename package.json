@@ -1,0 +1,28 @@
+{
+  "name": "fdm-pcb",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@tracespace/fixtures": "^5.0.0-alpha.0",
+    "@types/three": "^0.187.0",
+    "tsx": "^4.23.15",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.6"
+  },
+  "dependencies": {
+    "@tracespace/identify-layers": "^5.0.0-alpha.0",
+    "@tracespace/parser": "^5.0.0-alpha.0",
+    "@tracespace/plotter": "^5.0.0-alpha.0",
+    "fflate": "^0.8.3",
+    "jspdf": "^4.2.1",
+    "manifold-3d": "^3.5.5",
+    "svg2pdf.js": "^2.9.0",
+    "three": "^0.187.0"
+  }
+}
