@@ -81,6 +81,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         if (!lastGeometry) throw new Error('Load Gerber files first.');
         const st = req.settings;
         const substrate = st.sides === 2 ? st.halfSubstrate : st.substrate;
+        if (req.part !== 'single' && req.part !== 'top' && req.part !== 'bottom') throw new Error('STEP is not available for the fixture.');
         const side = req.part === 'single' ? st.side : req.part;
         const { text, bodies } = buildStep(await manifoldReady, lastGeometry, { substrate, relief: st.relief, side }, req.name);
         post({ type: 'step', id: req.id, part: req.part, text, bodies });

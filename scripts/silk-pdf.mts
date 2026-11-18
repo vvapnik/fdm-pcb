@@ -17,6 +17,6 @@ const L = detectLayers(files);
 const im = (r: string) => L.filter((l) => l.role === r).map((l) => plot(parse(l.text)));
 const pl = (r: string) => L.filter((l) => l.role === r).map((l) => { const t = parse(l.text); return { image: plot(t), levels: plotLevels(t) }; })[0];
 const m = await Module(); m.setup();
-const g = new Geometry(m).build({ copperTop: pl('copper-top'), copperBottom: pl('copper-bottom'), silkTop: pl('silk-top'), silkBottom: pl('silk-bottom'), outline: im('outline')[0], drills: im('drill'), copperOffset: 0 });
+const g = new Geometry(m).build({ copperTop: pl('copper-top'), copperBottom: pl('copper-bottom'), silkTop: pl('silk-top'), silkBottom: pl('silk-bottom'), outline: im('outline')[0], drills: im('drill'), copperOffset: Number(process.env.OFFSET ?? 0), minClearance: Number(process.env.CLEAR ?? 0.4) });
 fs.writeFileSync(out, Buffer.from(await silkscreenPdf(g, { outline: true, pads: true, holes: true, mirrorAll: false, name: 'test' }).arrayBuffer()));
 console.log('silk rings', g.silkTop.length, g.silkBottom.length);

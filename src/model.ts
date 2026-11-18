@@ -1,6 +1,6 @@
 // 2D board geometry → printable relief solid (manifold-3d).
 import type { ManifoldToplevel, Manifold, CrossSection as CS } from 'manifold-3d';
-import type { BoardGeometry, Ring } from './geometry';
+import { ringArea, type BoardGeometry, type Ring } from './geometry';
 
 export interface ModelSettings {
   /** Substrate thickness, mm. */
@@ -103,7 +103,81 @@ export function toStl(mesh: MeshData, name = 'fdm-pcb'): Blob {
   return new Blob([buf], { type: 'model/stl' });
 }
 
-export type PartName = 'single' | 'top' | 'bottom';
+export type PartName = 'single' | 'top' | 'bottom' | 'fixture' | 'fixture-top' | 'fixture-bottom';
+
+export interface FixtureSettings {
+  /** Indices into BoardGeometry.holes that get a pin. */
+  holes: number[];
+  /** Pin diameter = hole diameter − clearance, mm. */
+  clearance: number;
+  /** Base plate thickness, mm. */
+  base: number;
+  /** How far pins stick out above the stacked parts, mm. */
+  extra: number;
+}
+
+const toMesh = (solid: Manifold): MeshData => {
+  const mesh = solid.getMesh();
+  const n = mesh.numProp;
+  const positions = new Float32Array((mesh.vertProperties.length / n) * 3);
+  for (let i = 0, j = 0; i < mesh.vertProperties.length; i += n, j += 3) {
+    positions[j] = mesh.vertProperties[i];
+    positions[j + 1] = mesh.vertProperties[i + 1];
+    positions[j + 2] = mesh.vertProperties[i + 2];
+  }
+  return { positions, indices: new Uint32Array(mesh.triVerts), volume: solid.volume(), triangles: solid.numTri() };
+};
+
+/**
+ * Alignment jig: a tray with a pocket in the board outline and pins at the
+ * chosen drill holes. The part (flat side down) drops into the pocket; the rim
+ * is flush with the top of the copper relief, so a paper template or foil lies
+ * flat across board and rim. Pins stick out above that by `extra` and taper
+ * at the tip so parts and foil slide on easily.
+ */
+export function buildFixture(
+  m: ManifoldToplevel,
+  g: BoardGeometry,
+  f: FixtureSettings,
+  partHeight: number,
+  mirror: boolean,
+): { mesh: MeshData; warnings: string[] } {
+  const warnings: string[] = [];
+  const trash: { delete(): void }[] = [];
+  const keep = <T extends { delete(): void }>(x: T) => (trash.push(x), x);
+  try {
+    if (!g.outline.length) throw new Error('No closed board outline — assign the outline layer first.');
+    if (!f.holes.length) throw new Error('Select at least one hole for a pin (click holes in Processed geometry).');
+    const outline = keep(new m.CrossSection(g.outline, 'NonZero'));
+    const tray = keep(keep(keep(outline.offset(3, 'Round', 2, 32)).hull()).extrude(f.base + partHeight));
+    const pocket2d = keep(keep(new m.CrossSection(g.outline.filter((r) => ringArea(r) > 0), 'NonZero')).offset(f.clearance, 'Round', 2, 32));
+    const pocket = keep(keep(pocket2d.extrude(partHeight + 1)).translate([0, 0, f.base]));
+    const parts: Manifold[] = [keep(tray.subtract(pocket))];
+    const height = partHeight + f.extra;
+    const tip = Math.min(0.8, height / 3);
+    for (const i of f.holes) {
+      const h = g.holes[i];
+      if (!h) continue;
+      const r = (h.d - f.clearance) / 2;
+      if (r < 0.3) {
+        warnings.push(`Hole ${i + 1} (⌀${h.d.toFixed(2)}) is too small for a printable pin; skipped.`);
+        continue;
+      }
+      const seg = circleSegments(r);
+      const body = keep(m.Manifold.cylinder(height - tip + 0.01, r, r, seg));
+      const cone = keep(keep(m.Manifold.cylinder(tip, r, r * 0.6, seg)).translate([0, 0, height - tip]));
+      parts.push(keep(keep(body.add(cone)).translate([h.x, h.y, f.base - 0.01])));
+    }
+    let solid = keep(m.Manifold.union(parts));
+    if (mirror) {
+      const { min, max } = solid.boundingBox();
+      solid = keep(keep(solid.mirror([1, 0, 0])).translate([min[0] + max[0], 0, 0]));
+    }
+    return { mesh: toMesh(solid), warnings };
+  } finally {
+    for (const t of trash) t.delete();
+  }
+}
 
 export interface BoardSettings {
   sides: 1 | 2;
@@ -114,6 +188,8 @@ export interface BoardSettings {
   relief: number;
   /** Relief side for a single-sided board. */
   side: 'top' | 'bottom';
+  /** Also build an alignment fixture. */
+  fixture?: FixtureSettings;
 }
 
 /**
@@ -123,6 +199,25 @@ export interface BoardSettings {
  * hole back above the matching hole of the top half.
  */
 export function buildBoard(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettings) {
+  const r = buildParts(m, g, s);
+  if (!s.fixture) return r;
+  // Each jig holds one part; its rim is flush with that part's copper top.
+  const stack = (s.sides === 2 ? s.halfSubstrate : s.substrate) + s.relief;
+  if (s.sides === 1) {
+    // A single-sided bottom relief is printed mirrored; the jig must match the printed part.
+    const f = buildFixture(m, g, s.fixture, stack, s.side === 'bottom');
+    return { parts: [...r.parts, { part: 'fixture' as PartName, mesh: f.mesh }], warnings: [...r.warnings, ...f.warnings] };
+  }
+  // Double-sided: one jig per half; the bottom half is printed mirrored, so is its jig.
+  const top = buildFixture(m, g, s.fixture, stack, false);
+  const bottom = buildFixture(m, g, s.fixture, stack, true);
+  return {
+    parts: [...r.parts, { part: 'fixture-top' as PartName, mesh: top.mesh }, { part: 'fixture-bottom' as PartName, mesh: bottom.mesh }],
+    warnings: [...r.warnings, ...top.warnings],
+  };
+}
+
+function buildParts(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettings) {
   if (s.sides === 1) {
     const r = buildRelief(m, g, { substrate: s.substrate, relief: s.relief, side: s.side });
     return { parts: [{ part: 'single' as PartName, mesh: r.mesh }], warnings: r.warnings };

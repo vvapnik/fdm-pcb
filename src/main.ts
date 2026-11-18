@@ -18,6 +18,9 @@ const fields: { key: keyof Settings; label: string; step: number }[] = [
   { key: 'relief', label: 'Copper relief, mm', step: 0.1 },
   { key: 'copperOffset', label: 'Copper offset, mm', step: 0.05 },
   { key: 'minClearance', label: 'Min clearance, mm', step: 0.05 },
+  { key: 'pinClearance', label: 'Fixture clearance (pins and pocket), mm', step: 0.05 },
+  { key: 'fixtureBase', label: 'Fixture base, mm', step: 0.5 },
+  { key: 'pinExtra', label: 'Fixture pins above parts, mm', step: 0.5 },
 ];
 
 /** Preview colours; drawn bottom to top in this order. */
@@ -51,6 +54,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <h2>3D model</h2>
     <div class="row">
       <label id="sidelabel">Relief from <select id="side"><option value="auto">auto</option><option value="top">top copper</option><option value="bottom">bottom copper (mirrored)</option></select></label>
+      <label title="Plate with pins at the holes marked blue in Processed geometry (click holes to change)"><input type="checkbox" id="withfixture" /> Alignment fixture</label>
       <button id="build3d" type="button">Build 3D</button>
       <span id="downloads"></span>
     </div>
@@ -78,9 +82,9 @@ const form = $<HTMLFormElement>('#settings');
 form.addEventListener('input', () => {
   const data = new FormData(form);
   settings.sides = Number(data.get('sides')) === 2 ? 2 : 1;
-  const prevOffset = settings.copperOffset;
+  const prev = [settings.copperOffset, settings.minClearance];
   for (const f of fields) (settings[f.key] as number) = Number(data.get(f.key));
-  if (settings.copperOffset !== prevOffset) requestGeometry();
+  if (settings.copperOffset !== prev[0] || settings.minClearance !== prev[1]) requestGeometry();
 });
 
 // --- Layers -------------------------------------------------------------
@@ -127,6 +131,28 @@ $<HTMLTableElement>('#layers').addEventListener('change', (e) => {
 
 let view: 'raw' | 'geom' = 'raw';
 let geometry: BoardGeometry | null = null;
+/** Drill holes (indices into geometry.holes) that get a fixture pin. */
+let pinHoles = new Set<number>();
+let pinHolesKey = '';
+
+/** Default pins: the largest holes (usually mounting holes), at least two if possible. */
+function defaultPins(g: BoardGeometry): Set<number> {
+  const order = g.holes.map((_, i) => i).sort((a, b) => g.holes[b].d - g.holes[a].d);
+  if (!order.length) return new Set();
+  const dMax = g.holes[order[0]].d;
+  let pick = order.filter((i) => g.holes[i].d > dMax - 0.05);
+  if (pick.length < 2) pick = order.slice(0, Math.min(4, order.length)).filter((i) => g.holes[i].d >= 0.9);
+  return new Set(pick);
+}
+
+// Clicking a hole in Processed geometry toggles its fixture pin.
+$('#preview').addEventListener('click', (e) => {
+  const i = (e.target as SVGElement).dataset?.hole;
+  if (i === undefined) return;
+  const n = Number(i);
+  pinHoles.has(n) ? pinHoles.delete(n) : pinHoles.add(n);
+  renderPreview();
+});
 $('#viewmode').addEventListener('change', (e) => {
   view = (e.target as HTMLInputElement).value as 'raw' | 'geom';
   renderPreview();
@@ -142,8 +168,17 @@ function geometrySvg(g: BoardGeometry): string {
     show('outline') ? `<path d="${ringsD(g.outline)}" fill="#2f6b47" fill-rule="nonzero"/>` : '',
     show('copper-bottom') ? `<path d="${ringsD(g.copperBottom)}" fill="${ROLE_COLORS['copper-bottom']}" opacity=".6"/>` : '',
     show('copper-top') ? `<path d="${ringsD(g.copperTop)}" fill="${ROLE_COLORS['copper-top']}"/>` : '',
+    show('copper-bottom') ? `<path d="${ringsD(g.tightBottom)}" fill="#ff2bd6" stroke="#ff2bd6" stroke-width=".15"/>` : '',
+    show('copper-top') ? `<path d="${ringsD(g.tightTop)}" fill="#ff1f1f" stroke="#ff1f1f" stroke-width=".15"/>` : '',
     show('drill')
-      ? `<g fill="#111">${g.holes.map((h) => `<circle cx="${h.x}" cy="${h.y}" r="${h.d / 2}"/>`).join('')}<path d="${ringsD(g.slots)}"/></g>`
+      ? `<g fill="#111">${g.holes
+          .map(
+            (h, i) =>
+              `<circle data-hole="${i}" cx="${h.x}" cy="${h.y}" r="${Math.max(h.d / 2, 0.4)}" style="cursor:pointer"` +
+              (pinHoles.has(i) ? ` fill="#1e90ff" stroke="#fff" stroke-width=".25"` : '') +
+              `><title>⌀${h.d.toFixed(2)} mm — click to ${pinHoles.has(i) ? 'remove' : 'add'} fixture pin</title></circle>`,
+          )
+          .join('')}<path d="${ringsD(g.slots)}"/></g>`
       : '',
   ].join('');
 }
@@ -206,6 +241,7 @@ function requestGeometry() {
       outline: first('outline')?.image,
       drills: layers.filter((l) => l.role === 'drill' && images.has(l.name)).map((l) => images.get(l.name)!),
       copperOffset: settings.copperOffset,
+      minClearance: settings.minClearance,
     },
   });
 }
@@ -265,13 +301,26 @@ worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
   } else if (msg.type === 'geometry' && msg.id === geomId) {
     geometry = msg.geometry;
     const g = geometry;
+    // Keep the pin selection while only copper settings change.
+    const key = g.holes.map((h) => `${h.x.toFixed(3)},${h.y.toFixed(3)}`).join(';');
+    if (key !== pinHolesKey) {
+      pinHoles = defaultPins(g);
+      pinHolesKey = key;
+    }
     const area = (rs: Ring[]) => rs.reduce((a, r) => a + ringArea(r), 0).toFixed(0);
     status(
       `Geometry in ${msg.ms} ms — copper top ${g.copperTop.length} rings / ${area(g.copperTop)} mm², ` +
         `bottom ${g.copperBottom.length} / ${area(g.copperBottom)} mm², board ${area(g.outline)} mm² ` +
         `(${g.outline.filter((r) => ringArea(r) < 0).length} cutouts), ${g.holes.length} holes, ${g.slots.length} slots`,
     );
-    $('#warnings').innerHTML = g.warnings.map((w) => `<li class="err">${w}</li>`).join('');
+    const tight = (rs: Ring[]) => rs.filter((r) => ringArea(r) > 0).length;
+    const tightMsg =
+      tight(g.tightTop) || tight(g.tightBottom)
+        ? [
+            `Gaps under ${settings.minClearance} mm: ${tight(g.tightTop)} on top (red), ${tight(g.tightBottom)} on bottom (magenta) — see Processed geometry. Lower Copper offset to widen them.`,
+          ]
+        : [];
+    $('#warnings').innerHTML = [...g.warnings, ...tightMsg].map((w) => `<li class="err">${w}</li>`).join('');
     renderPreview();
   }
 };
@@ -285,7 +334,14 @@ let parts: { part: PartName; mesh: MeshData }[] = [];
 let modelName = 'board';
 let builtSettings: Record<string, unknown> | null = null;
 
-const PART_LABELS: Record<PartName, string> = { single: 'STL', top: 'Top half STL', bottom: 'Bottom half STL' };
+const PART_LABELS: Record<PartName, string> = {
+  single: 'STL',
+  top: 'Top half STL',
+  bottom: 'Bottom half STL',
+  fixture: 'Fixture STL',
+  'fixture-top': 'Top fixture STL',
+  'fixture-bottom': 'Bottom fixture STL',
+};
 
 function clearParts() {
   parts = [];
@@ -312,6 +368,9 @@ $('#build3d').addEventListener('click', () => {
     halfSubstrate: settings.halfSubstrate,
     relief: settings.relief,
     side,
+    fixture: $<HTMLInputElement>('#withfixture').checked
+      ? { holes: [...pinHoles], clearance: settings.pinClearance, base: settings.fixtureBase, extra: settings.pinExtra }
+      : undefined,
   };
   worker.postMessage({ type: 'model', id: ++modelId, settings: builtSettings });
 });
@@ -328,7 +387,7 @@ $('#downloads').addEventListener('click', (e) => {
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(toStl(p.mesh, `${modelName} ${p.part}`));
-  a.download = p.part === 'single' ? `${modelName}-relief.stl` : `${modelName}-${p.part}-half.stl`;
+  a.download = p.part === 'single' ? `${modelName}-relief.stl` : p.part.startsWith('fixture') ? `${modelName}-${p.part}.stl` : `${modelName}-${p.part}-half.stl`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
@@ -345,7 +404,9 @@ worker.addEventListener('message', (e: MessageEvent<WorkerResponse>) => {
     .map(
       (p) =>
         `<button type="button" data-part="${p.part}">${PART_LABELS[p.part]}</button> ` +
-        `<button type="button" data-part="${p.part}" data-format="step">${PART_LABELS[p.part].replace('STL', 'STEP')}</button>`,
+        (p.part.startsWith('fixture')
+          ? ''
+          : `<button type="button" data-part="${p.part}" data-format="step">${PART_LABELS[p.part].replace('STL', 'STEP')}</button>`),
     )
     .join(' ');
   const desc = parts

@@ -40,6 +40,9 @@ export interface BoardGeometry {
   holes: Hole[];
   /** Non-round drill features (routed slots) as rings. */
   slots: Ring[];
+  /** Copper gaps narrower than the minimum clearance, per side. */
+  tightTop: Ring[];
+  tightBottom: Ring[];
   warnings: string[];
 }
 
@@ -292,6 +295,54 @@ export class Geometry {
     return { holes, slots: slots.length ? this.rings(this.union(slots)) : [] };
   }
 
+  /**
+   * Gaps narrower than `clearance`: morphological closing (grow then shrink by
+   * half the clearance) fills exactly those gaps; subtracting the copper leaves them.
+   */
+  tightGaps(copper: Ring[], clearance: number): Ring[] {
+    if (!copper.length || clearance <= 0) return [];
+    const d = clearance / 2;
+    const steps = arcSteps(d, 2 * Math.PI);
+    const trash: CS[] = [];
+    const keep = (x: CS) => (trash.push(x), x);
+    const close = (x: CS) => keep(keep(x.offset(d, 'Round', 2, steps)).offset(-d, 'Round', 2, steps));
+    try {
+      const cs = keep(this.union(copper));
+      const islands = cs.decompose().map(keep);
+      const boxes = islands.map((i) => i.bounds());
+      const gaps = keep(keep(close(cs).subtract(cs)).offset(-0.005, 'Miter')).offset(0.005, 'Miter');
+      keep(gaps);
+      // Closing also fills concave corners of a single shape. A real gap touches
+      // copper of at least two different islands; corner fillets touch one.
+      const out: Ring[] = [];
+      for (const region of gaps.decompose().map(keep)) {
+        const probe = keep(region.offset(0.02, 'Miter'));
+        const pb = probe.bounds();
+        let touching = 0;
+        for (let k = 0; k < islands.length && touching < 2; k++) {
+          const ib = boxes[k];
+          if (ib.min[0] > pb.max[0] || ib.max[0] < pb.min[0] || ib.min[1] > pb.max[1] || ib.max[1] < pb.min[1]) continue;
+          if (keep(probe.intersect(islands[k])).area() > 1e-6) touching++;
+        }
+        if (touching >= 2) out.push(...(region.toPolygons() as Ring[]));
+      }
+      return out;
+    } finally {
+      for (const x of trash) x.delete();
+    }
+  }
+
+  /**
+   * A gap of width w becomes w − 2·offset after the copper offset, and gaps
+   * that close entirely merge their islands. So measure on the original copper
+   * against clearance + 2·offset: shorts caused by the offset are reported too.
+   */
+  private tight(p: Plotted | undefined, offsetCopper: Ring[], input: GeometryInput): Ring[] {
+    if (!p) return [];
+    const base = input.copperOffset ? this.layerArea(p) : offsetCopper;
+    return this.tightGaps(base, input.minClearance + 2 * input.copperOffset);
+  }
+
   build(input: GeometryInput): BoardGeometry {
     const warnings: string[] = [];
     const holes: Hole[] = [];
@@ -301,9 +352,13 @@ export class Geometry {
       holes.push(...f.holes);
       slots.push(...f.slots);
     }
+    const copperTop = input.copperTop ? this.layerArea(input.copperTop, input.copperOffset) : [];
+    const copperBottom = input.copperBottom ? this.layerArea(input.copperBottom, input.copperOffset) : [];
     return {
-      copperTop: input.copperTop ? this.layerArea(input.copperTop, input.copperOffset) : [],
-      copperBottom: input.copperBottom ? this.layerArea(input.copperBottom, input.copperOffset) : [],
+      copperTop,
+      copperBottom,
+      tightTop: this.tight(input.copperTop, copperTop, input),
+      tightBottom: this.tight(input.copperBottom, copperBottom, input),
       padsTop: input.copperTop ? this.pads(input.copperTop) : [],
       padsBottom: input.copperBottom ? this.pads(input.copperBottom) : [],
       silkTop: input.silkTop ? this.layerArea(input.silkTop) : [],
@@ -324,4 +379,6 @@ export interface GeometryInput {
   outline?: ImageTree;
   drills: ImageTree[];
   copperOffset: number;
+  /** Gaps below this width (mm) are reported as too tight for FDM. */
+  minClearance: number;
 }
