@@ -1,5 +1,6 @@
 // 2D board geometry → printable relief solid (manifold-3d).
 import type { ManifoldToplevel, Manifold, CrossSection as CS } from 'manifold-3d';
+import { buildStencil, type StencilSettings } from './stencil';
 import { ringArea, type BoardGeometry, type Ring } from './geometry';
 
 export interface ModelSettings {
@@ -103,7 +104,7 @@ export function toStl(mesh: MeshData, name = 'fdm-pcb'): Blob {
   return new Blob([buf], { type: 'model/stl' });
 }
 
-export type PartName = 'single' | 'top' | 'bottom' | 'fixture' | 'fixture-top' | 'fixture-bottom';
+export type PartName = 'single' | 'top' | 'bottom' | 'fixture' | 'fixture-top' | 'fixture-bottom' | 'stencil' | 'stencil-top' | 'stencil-bottom';
 
 export interface FixtureSettings {
   /** Indices into BoardGeometry.holes that get a pin. */
@@ -190,6 +191,8 @@ export interface BoardSettings {
   side: 'top' | 'bottom';
   /** Also build an alignment fixture. */
   fixture?: FixtureSettings;
+  /** Also build a foil-cutting stencil per relief side. */
+  stencil?: Omit<StencilSettings, 'side' | 'pins'>;
 }
 
 /**
@@ -199,6 +202,21 @@ export interface BoardSettings {
  * hole back above the matching hole of the top half.
  */
 export function buildBoard(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettings) {
+  const r = buildWithFixture(m, g, s);
+  if (!s.stencil) return r;
+  // Stencils get holes for the fixture pins, so they drop onto the same jig.
+  const pins = s.fixture ? { holes: s.fixture.holes, clearance: s.fixture.clearance } : undefined;
+  const sides: ['stencil' | 'stencil-top' | 'stencil-bottom', 'top' | 'bottom'][] =
+    s.sides === 1 ? [['stencil', s.side]] : [['stencil-top', 'top'], ['stencil-bottom', 'bottom']];
+  for (const [part, side] of sides) {
+    const st = buildStencil(m, g, { ...s.stencil, side, pins });
+    r.parts.push({ part, mesh: st.mesh });
+    r.warnings.push(...st.warnings);
+  }
+  return r;
+}
+
+function buildWithFixture(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettings) {
   const r = buildParts(m, g, s);
   if (!s.fixture) return r;
   // Each jig holds one part; its rim is flush with that part's copper top.
@@ -206,13 +224,13 @@ export function buildBoard(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettin
   if (s.sides === 1) {
     // A single-sided bottom relief is printed mirrored; the jig must match the printed part.
     const f = buildFixture(m, g, s.fixture, stack, s.side === 'bottom');
-    return { parts: [...r.parts, { part: 'fixture' as PartName, mesh: f.mesh }], warnings: [...r.warnings, ...f.warnings] };
+    return { parts: [...r.parts, { part: 'fixture' as PartName, mesh: f.mesh }] as { part: PartName; mesh: MeshData }[], warnings: [...r.warnings, ...f.warnings] };
   }
   // Double-sided: one jig per half; the bottom half is printed mirrored, so is its jig.
   const top = buildFixture(m, g, s.fixture, stack, false);
   const bottom = buildFixture(m, g, s.fixture, stack, true);
   return {
-    parts: [...r.parts, { part: 'fixture-top' as PartName, mesh: top.mesh }, { part: 'fixture-bottom' as PartName, mesh: bottom.mesh }],
+    parts: [...r.parts, { part: 'fixture-top' as PartName, mesh: top.mesh }, { part: 'fixture-bottom' as PartName, mesh: bottom.mesh }] as { part: PartName; mesh: MeshData }[],
     warnings: [...r.warnings, ...top.warnings],
   };
 }
@@ -220,7 +238,7 @@ export function buildBoard(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettin
 function buildParts(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettings) {
   if (s.sides === 1) {
     const r = buildRelief(m, g, { substrate: s.substrate, relief: s.relief, side: s.side });
-    return { parts: [{ part: 'single' as PartName, mesh: r.mesh }], warnings: r.warnings };
+    return { parts: [{ part: 'single' as PartName, mesh: r.mesh }] as { part: PartName; mesh: MeshData }[], warnings: r.warnings };
   }
   const top = buildRelief(m, g, { substrate: s.halfSubstrate, relief: s.relief, side: 'top' });
   const bottom = buildRelief(m, g, { substrate: s.halfSubstrate, relief: s.relief, side: 'bottom' });
@@ -228,7 +246,7 @@ function buildParts(m: ManifoldToplevel, g: BoardGeometry, s: BoardSettings) {
     parts: [
       { part: 'top' as PartName, mesh: top.mesh },
       { part: 'bottom' as PartName, mesh: bottom.mesh },
-    ],
+    ] as { part: PartName; mesh: MeshData }[],
     warnings: [...top.warnings, ...bottom.warnings],
   };
 }

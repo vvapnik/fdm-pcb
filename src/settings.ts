@@ -17,6 +17,13 @@ export interface Settings {
   fixtureBase: number;
   /** How far fixture pins stick out above the stacked parts. */
   pinExtra: number;
+  /** Foil stencil: scalpel slot width, plate thickness, bridge height above the plate. */
+  stencilSlot: number;
+  stencilThickness: number;
+  stencilBridge: number;
+  /** Bridge width along the slot, and how far it rests on the plate each side. */
+  stencilBridgeWidth: number;
+  stencilBridgeLand: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -29,4 +36,9 @@ export const DEFAULT_SETTINGS: Settings = {
   pinClearance: 0.2,
   fixtureBase: 2,
   pinExtra: 4,
+  stencilSlot: 0.5,
+  stencilThickness: 1.2,
+  stencilBridge: 1.2,
+  stencilBridgeWidth: 1.0,
+  stencilBridgeLand: 0.8,
 };

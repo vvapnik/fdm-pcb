@@ -9,6 +9,7 @@ import { ringArea, type BoardGeometry, type Ring } from './geometry';
 import { toStl, type MeshData, type PartName } from './model';
 import { Viewer3D } from './viewer3d';
 import { silkscreenPdf } from './pdf';
+import { DEFAULT_STENCIL } from './stencil';
 
 const settings: Settings = { ...DEFAULT_SETTINGS };
 
@@ -21,6 +22,11 @@ const fields: { key: keyof Settings; label: string; step: number }[] = [
   { key: 'pinClearance', label: 'Fixture clearance (pins and pocket), mm', step: 0.05 },
   { key: 'fixtureBase', label: 'Fixture base, mm', step: 0.5 },
   { key: 'pinExtra', label: 'Fixture pins above parts, mm', step: 0.5 },
+  { key: 'stencilSlot', label: 'Stencil slot (scalpel), mm', step: 0.05 },
+  { key: 'stencilThickness', label: 'Stencil plate, mm', step: 0.1 },
+  { key: 'stencilBridge', label: 'Stencil bridge height above plate, mm', step: 0.1 },
+  { key: 'stencilBridgeWidth', label: 'Stencil bridge width, mm', step: 0.1 },
+  { key: 'stencilBridgeLand', label: 'Stencil bridge overlap onto plate, mm', step: 0.1 },
 ];
 
 /** Preview colours; drawn bottom to top in this order. */
@@ -55,6 +61,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="row">
       <label id="sidelabel">Relief from <select id="side"><option value="auto">auto</option><option value="top">top copper</option><option value="bottom">bottom copper (mirrored)</option></select></label>
       <label title="Plate with pins at the holes marked blue in Processed geometry (click holes to change)"><input type="checkbox" id="withfixture" /> Alignment fixture</label>
+      <label title="Plate with scalpel slots along every copper edge; bridges above the plate hold it together. With a fixture it gets holes for the pins."><input type="checkbox" id="withstencil" /> Foil cutting stencil</label>
       <button id="build3d" type="button">Build 3D</button>
       <span id="downloads"></span>
     </div>
@@ -341,6 +348,9 @@ const PART_LABELS: Record<PartName, string> = {
   fixture: 'Fixture STL',
   'fixture-top': 'Top fixture STL',
   'fixture-bottom': 'Bottom fixture STL',
+  stencil: 'Stencil STL',
+  'stencil-top': 'Top stencil STL',
+  'stencil-bottom': 'Bottom stencil STL',
 };
 
 function clearParts() {
@@ -371,6 +381,9 @@ $('#build3d').addEventListener('click', () => {
     fixture: $<HTMLInputElement>('#withfixture').checked
       ? { holes: [...pinHoles], clearance: settings.pinClearance, base: settings.fixtureBase, extra: settings.pinExtra }
       : undefined,
+    stencil: $<HTMLInputElement>('#withstencil').checked
+      ? { ...DEFAULT_STENCIL, slot: settings.stencilSlot, thickness: settings.stencilThickness, bridgeHeight: settings.stencilBridge, bridgeWidth: settings.stencilBridgeWidth, bridgeLand: settings.stencilBridgeLand }
+      : undefined,
   };
   worker.postMessage({ type: 'model', id: ++modelId, settings: builtSettings });
 });
@@ -387,7 +400,7 @@ $('#downloads').addEventListener('click', (e) => {
   }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(toStl(p.mesh, `${modelName} ${p.part}`));
-  a.download = p.part === 'single' ? `${modelName}-relief.stl` : p.part.startsWith('fixture') ? `${modelName}-${p.part}.stl` : `${modelName}-${p.part}-half.stl`;
+  a.download = p.part === 'single' ? `${modelName}-relief.stl` : /^(fixture|stencil)/.test(p.part) ? `${modelName}-${p.part}.stl` : `${modelName}-${p.part}-half.stl`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
@@ -404,7 +417,7 @@ worker.addEventListener('message', (e: MessageEvent<WorkerResponse>) => {
     .map(
       (p) =>
         `<button type="button" data-part="${p.part}">${PART_LABELS[p.part]}</button> ` +
-        (p.part.startsWith('fixture')
+        (/^(fixture|stencil)/.test(p.part)
           ? ''
           : `<button type="button" data-part="${p.part}" data-format="step">${PART_LABELS[p.part].replace('STL', 'STEP')}</button>`),
     )
