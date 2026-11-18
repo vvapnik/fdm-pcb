@@ -24,3 +24,7 @@ Pushing to `main` deploys to GitHub Pages (`.github/workflows/pages.yml`).
 Plans and tasks live on the Lab board: `backlog task list --project fdm-pcb` · plan diagram: `fdm-pcb-plan.html` next to this repo in the Lab workspace
 
 Developed with the help of Claude Code (Anthropic).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
